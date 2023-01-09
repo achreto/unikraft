@@ -109,6 +109,11 @@ config VIRTIO_BUS
                Virtio bus driver for probing and operating virtio device and
                transport layer.
 
+config IVSHMEM
+	bool "Enable IVSHMEM support"
+	default n
+       depends on KVM_PCI
+
 menu "Virtio"
 config VIRTIO_PCI
        bool "Virtio PCI device support"
@@ -166,5 +171,4 @@ config LIBOFW
 config UKPLAT_ALLOW_GIC
 	bool
 	default y
-
 endif

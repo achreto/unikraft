@@ -13,6 +13,7 @@ $(eval $(call addplatlib_s,kvm,libkvmvirtio,$(CONFIG_VIRTIO_BUS)))
 $(eval $(call addplatlib_s,kvm,libkvmvirtionet,$(CONFIG_VIRTIO_NET)))
 $(eval $(call addplatlib_s,kvm,libkvmvirtioblk,$(CONFIG_VIRTIO_BLK)))
 $(eval $(call addplatlib_s,kvm,libkvmvirtio9p,$(CONFIG_VIRTIO_9P)))
+$(eval $(call addplatlib_s,kvm,libkvmivshmem,$(CONFIG_IVSHMEM)))
 $(eval $(call addplatlib_s,kvm,libkvmofw,$(CONFIG_LIBOFW)))
 $(eval $(call addplatlib_s,kvm,libkvmgic,$(CONFIG_LIBGIC)))
 $(eval $(call addplatlib_s,kvm,libkvmpl031,$(CONFIG_RTC_PL031)))
@@ -141,6 +142,17 @@ LIBKVMPF_CINCLUDES-$(CONFIG_ARCH_ARM_64)   += -I$(UK_PLAT_COMMON_BASE)/include
 LIBKVMPF_CINCLUDES-$(CONFIG_ARCH_ARM_64)   += -I$(LIBKVMPLAT_BASE)/include
 LIBKVMPF_CINCLUDES-$(CONFIG_ARCH_ARM_64)   += -I$(UK_PLAT_DRIVERS_BASE)/include
 LIBKVMPF_SRCS-$(CONFIG_KVM_PF) += $(UK_PLAT_COMMON_BASE)/platform_bus.c|common
+
+##
+## Virtio library definitions
+##
+LIBKVMIVSHMEM_ASINCLUDES-y   += -I$(LIBKVMPLAT_BASE)/include
+LIBKVMIVSHMEM_CINCLUDES-y    += -I$(LIBKVMPLAT_BASE)/include
+LIBKVMIVSHMEM_ASINCLUDES-y   += -I$(UK_PLAT_COMMON_BASE)/include
+LIBKVMIVSHMEM_CINCLUDES-y    += -I$(UK_PLAT_COMMON_BASE)/include
+LIBKVMIVSHMEM_ASINCLUDES-y   += -I$(UK_PLAT_DRIVERS_BASE)/include
+LIBKVMIVSHMEM_CINCLUDES-y    += -I$(UK_PLAT_DRIVERS_BASE)/include
+LIBKVMIVSHMEM_SRCS           += $(UK_PLAT_DRIVERS_BASE)/ivshmem/ivshmem_pci.c
 
 ##
 ## Virtio library definitions
