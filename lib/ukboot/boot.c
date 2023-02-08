@@ -39,16 +39,29 @@
 #include <stdio.h>
 #include <errno.h>
 
+#ifdef CONFIG_HAVE_PAGING
+#include <uk/plat/paging.h>
+#include <uk/falloc.h>
+#ifdef CONFIG_LIBUKVMEM
+#include <uk/vmem.h>
+#endif /* CONFIG_LIBUKVMEM */
+#endif /* CONFIG_HAVE_PAGING */
+/* FIXME: allocators are hard-coded for now */
 #if CONFIG_LIBUKBOOT_INITBBUDDY
 #include <uk/allocbbuddy.h>
+#define uk_alloc_init uk_allocbbuddy_init
 #elif CONFIG_LIBUKBOOT_INITREGION
 #include <uk/allocregion.h>
+#define uk_alloc_init uk_allocregion_init
 #elif CONFIG_LIBUKBOOT_INITMIMALLOC
 #include <uk/mimalloc.h>
+#define uk_alloc_init uk_mimalloc_init
 #elif CONFIG_LIBUKBOOT_INITTLSF
 #include <uk/tlsf.h>
+#define uk_alloc_init uk_tlsf_init
 #elif CONFIG_LIBUKBOOT_INITTINYALLOC
 #include <uk/tinyalloc.h>
+#define uk_alloc_init uk_tinyalloc_init
 #endif
 #if CONFIG_LIBUKSCHED
 #include <uk/sched.h>
@@ -79,6 +92,120 @@
 
 int main(int argc, char *argv[]) __weak;
 
+#if defined(CONFIG_LIBUKBOOT_HEAP_BASE) && defined(CONFIG_LIBUKVMEM)
+static struct uk_vas kernel_vas;
+#endif /* CONFIG_LIBUKBOOT_HEAP_BASE && CONFIG_LIBUKVMEM */
+
+static struct uk_alloc *heap_init()
+{
+	struct uk_alloc *a = NULL;
+#ifdef CONFIG_LIBUKBOOT_HEAP_BASE
+	struct uk_pagetable *pt = ukplat_pt_get_active();
+	__sz free_pages, alloc_pages;
+	__vaddr_t heap_base;
+#ifdef CONFIG_LIBUKVMEM
+	__vaddr_t vaddr;
+#endif /* CONFIG_LIBUKVMEM */
+	int rc;
+#else /* CONFIG_LIBUKBOOT_HEAP_BASE */
+	struct ukplat_memregion_desc *md;
+#endif /* !CONFIG_LIBUKBOOT_HEAP_BASE */
+
+#ifdef CONFIG_LIBUKBOOT_HEAP_BASE
+	UK_ASSERT(pt);
+
+	/* Paging is enabled. The available physical memory has already been
+	 * added to the frame allocator. No heap area has been mapped. We will
+	 * do so at the configured heap base.
+	 */
+	heap_base = CONFIG_LIBUKBOOT_HEAP_BASE;
+
+#ifdef CONFIG_LIBUKVMEM
+#define HEAP_INITIAL_PAGES		16
+#define HEAP_INITIAL_LEN		(HEAP_INITIAL_PAGES << PAGE_SHIFT)
+	/* In addition to paging, we have virtual address space management. We
+	 * will thus also represent the heap as a dedicated VMA to enable
+	 * on-demand paging for the heap. However, we have a chicken-egg
+	 * problem here. This is because we need an allocator for allocating
+	 * VMA objects but to do so, we need to create the heap VMA first.
+	 * Theoretically, we could use a simple region allocator to bootstrap.
+	 * But then, we would have to cope with VMA objects from different
+	 * allocators. So instead, we just initialize a small heap using fixed
+	 * mappings and then create the VMA on top. Afterwards, we add the
+	 * remainder of the VMA to the allocator.
+	 */
+	rc = ukplat_page_map(pt, heap_base, __PADDR_ANY,
+			     HEAP_INITIAL_PAGES, PAGE_ATTR_PROT_RW, 0);
+	if (unlikely(rc))
+		return NULL;
+
+	a = uk_alloc_init((void *)heap_base, HEAP_INITIAL_PAGES << PAGE_SHIFT);
+	if (unlikely(!a))
+		return NULL;
+
+	rc = uk_vas_init(&kernel_vas, pt, a);
+	if (unlikely(rc))
+		return NULL;
+
+	rc = uk_vas_set_active(&kernel_vas);
+	if (unlikely(rc))
+		return NULL;
+
+	free_pages  = pt->fa->free_memory >> PAGE_SHIFT;
+	alloc_pages = free_pages - PT_PAGES(free_pages);
+
+	vaddr = heap_base;
+	rc = uk_vma_map_anon(&kernel_vas, &vaddr,
+			     (alloc_pages + HEAP_INITIAL_PAGES) << PAGE_SHIFT,
+			     PAGE_ATTR_PROT_RW, UK_VMA_MAP_UNINITIALIZED,
+			     "heap");
+	if (unlikely(rc))
+		return NULL;
+
+	rc = uk_alloc_addmem(a, (void *)(heap_base + HEAP_INITIAL_LEN),
+			     (alloc_pages - HEAP_INITIAL_PAGES) << PAGE_SHIFT);
+	if (unlikely(rc))
+		return NULL;
+#else /* CONFIG_LIBUKVMEM */
+	free_pages  = pt->fa->free_memory >> PAGE_SHIFT;
+	alloc_pages = free_pages - PT_PAGES(free_pages);
+
+	rc = ukplat_page_map(pt, heap_base, __PADDR_ANY,
+			     alloc_pages, PAGE_ATTR_PROT_RW, 0);
+	if (unlikely(rc))
+		return NULL;
+
+	a = uk_alloc_init((void *)heap_base, alloc_pages << PAGE_SHIFT);
+#endif /* !CONFIG_LIBUKVMEM */
+#else /* CONFIG_LIBUKBOOT_HEAP_BASE */
+	/* Paging is disabled so we still have the static boot page table set
+	 * that maps (some of) the physical memory to virtual memory. The
+	 * UKPLAT_MEMRT_FREE memory regions reflect this. Try to use these
+	 * memory regions to initialize the allocator. If it fails, we will try
+	 * again with the next region. As soon we have an allocator, we simply
+	 * add every subsequent region to it.
+	 */
+	ukplat_memregion_foreach(&md, UKPLAT_MEMRT_FREE, 0, 0) {
+		uk_pr_debug("Trying %p-%p 0x%02x %s\n",
+			    (void *)md->vbase, (void *)(md->vbase + md->len),
+			    md->flags,
+#if CONFIG_UKPLAT_MEMRNAME
+			    md->name
+#else /* CONFIG_UKPLAT_MEMRNAME */
+			    ""
+#endif /* !CONFIG_UKPLAT_MEMRNAME */
+			    );
+
+		if (!a)
+			a = uk_alloc_init((void *)md->vbase, md->len);
+		else
+			uk_alloc_addmem(a, (void *)md->vbase, md->len);
+	}
+#endif /* !CONFIG_LIBUKBOOT_HEAP_BASE */
+
+	return a;
+}
+
 /* defined in <uk/plat.h> */
 void ukplat_entry_argp(char *arg0, char *argb, __sz argb_len)
 {
@@ -106,7 +233,6 @@ void ukplat_entry(int argc, char *argv[])
 	struct uk_alloc *a = NULL;
 #endif
 #if !CONFIG_LIBUKBOOT_NOALLOC
-	struct ukplat_memregion_desc md;
 	void *tls = NULL;
 #endif
 #if CONFIG_LIBUKSCHED
@@ -135,44 +261,11 @@ void ukplat_entry(int argc, char *argv[])
 #endif /* CONFIG_LIBUKLIBPARAM */
 
 #if !CONFIG_LIBUKBOOT_NOALLOC
-	/* initialize memory allocator
-	 * FIXME: allocators are hard-coded for now
-	 */
 	uk_pr_info("Initialize memory allocator...\n");
-	ukplat_memregion_foreach(&md, UKPLAT_MEMRF_ALLOCATABLE) {
-#if CONFIG_UKPLAT_MEMRNAME
-		uk_pr_debug("Try memory region: %p - %p (flags: 0x%02x, name: %s)...\n",
-			    md.base, (void *)((size_t)md.base + md.len),
-			    md.flags, md.name);
-#else
-		uk_pr_debug("Try memory region: %p - %p (flags: 0x%02x)...\n",
-			    md.base, (void *)((size_t)md.base + md.len),
-			    md.flags);
-#endif
 
-		/* try to use memory region to initialize allocator
-		 * if it fails, we will try  again with the next region.
-		 * As soon we have an allocator, we simply add every
-		 * subsequent region to it
-		 */
-		if (!a) {
-#if CONFIG_LIBUKBOOT_INITBBUDDY
-			a = uk_allocbbuddy_init(md.base, md.len);
-#elif CONFIG_LIBUKBOOT_INITREGION
-			a = uk_allocregion_init(md.base, md.len);
-#elif CONFIG_LIBUKBOOT_INITMIMALLOC
-			a = uk_mimalloc_init(md.base, md.len);
-#elif CONFIG_LIBUKBOOT_INITTLSF
-			a = uk_tlsf_init(md.base, md.len);
-#elif CONFIG_LIBUKBOOT_INITTINYALLOC
-			a = uk_tinyalloc_init(md.base, md.len);
-#endif
-		} else {
-			uk_alloc_addmem(a, md.base, md.len);
-		}
-	}
+	a = heap_init();
 	if (unlikely(!a))
-		UK_CRASH("No suitable memory region for memory allocator\n");
+		UK_CRASH("Failed to initialize memory allocator\n");
 	else {
 		rc = ukplat_memallocator_set(a);
 		if (unlikely(rc != 0))
