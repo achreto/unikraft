@@ -38,6 +38,10 @@
 #include <uk/plat/lcpu.h>
 #include <uk/plat/irq.h>
 #include <pci/pci_bus.h>
+#include <virtio/virtio_config.h>
+#include <virtio/virtio_bus.h>
+#include <virtio/virtqueue.h>
+#include <virtio/virtio_pci.h>
 #include <stdio.h>
 
 #define IVSHMEM_PCI_DEVICE_ID (0x1110)
